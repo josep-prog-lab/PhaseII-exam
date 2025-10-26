@@ -269,16 +269,12 @@ const CandidateExam = () => {
       console.log("Starting permission request process...");
       setShowPermissionDialog(true);
       
-      // Request camera and microphone permissions only
-      // Screen sharing will be requested by VideoRecorder when recording starts
+      // Step 1: Request camera and microphone permissions
       console.log("Requesting camera and microphone permissions...");
-      const stream = await navigator.mediaDevices.getUserMedia({
+      const userMediaStream = await navigator.mediaDevices.getUserMedia({
         video: true,
         audio: true
       });
-      
-      // Stop the stream immediately as we just needed permission
-      stream.getTracks().forEach(track => track.stop());
       
       setPermissionStatus(prev => ({
         ...prev,
@@ -289,17 +285,65 @@ const CandidateExam = () => {
       console.log("Camera and microphone permissions granted");
       toast.success("Camera and microphone permissions granted!");
       
-      // All basic permissions granted, start the exam
-      // Screen sharing will be requested when recording actually starts
-      console.log("Basic permissions granted, starting exam...");
+      // Step 2: Request screen sharing permission (mandatory)
+      console.log("Requesting screen sharing permission...");
+      try {
+        const displayMediaStream = await navigator.mediaDevices.getDisplayMedia({
+          video: {
+            displaySurface: 'monitor',
+            cursor: 'always'
+          },
+          audio: true
+        });
+        
+        // Check if user selected entire screen (not a window or tab)
+        const videoTrack = displayMediaStream.getVideoTracks()[0];
+        const settings = videoTrack.getSettings();
+        
+        // Stop this test stream - VideoRecorder will request again when starting
+        displayMediaStream.getTracks().forEach(track => track.stop());
+        
+        if (settings.displaySurface !== 'monitor') {
+          toast.error("You must share your ENTIRE SCREEN, not just a window or tab.");
+          throw new Error("Entire screen sharing is mandatory");
+        }
+        
+        setPermissionStatus(prev => ({
+          ...prev,
+          screen: true
+        }));
+        
+        console.log("Screen sharing permission granted");
+        toast.success("Screen sharing permission granted!");
+        
+      } catch (screenError) {
+        console.error("Screen sharing permission failed:", screenError);
+        userMediaStream.getTracks().forEach(track => track.stop());
+        toast.error("Screen sharing is mandatory. You must share your entire screen to take the exam.");
+        throw new Error("Screen sharing permission denied");
+      }
+      
+      // Stop the user media stream - VideoRecorder will request fresh streams
+      userMediaStream.getTracks().forEach(track => track.stop());
+      
+      // All permissions granted, start the exam
+      console.log("All permissions granted, starting exam...");
       setExamStarted(true);
       setShowPermissionDialog(false);
       
-      toast.success("Permissions granted! Starting exam...");
+      toast.success("All permissions granted! Starting exam...");
       
     } catch (error) {
       console.error("Permission request failed:", error);
-      toast.error(`Failed to get permissions: ${error instanceof Error ? error.message : 'Unknown error'}. Please allow camera and microphone to continue.`);
+      toast.error(`Failed to get required permissions: ${error instanceof Error ? error.message : 'Unknown error'}. All permissions are mandatory to proceed.`);
+      
+      // Reset permission status on failure
+      setPermissionStatus({
+        camera: false,
+        microphone: false,
+        screen: false
+      });
+      setShowPermissionDialog(false);
     }
   };
 
@@ -486,8 +530,8 @@ const CandidateExam = () => {
 
       <div className="container mx-auto px-6 py-8">
         <div className="grid gap-8 lg:grid-cols-4">
-          {/* Video Recording */}
-          <div className="lg:col-span-1">
+          {/* Video Recording - Always visible with prominent camera preview */}
+          <div className="lg:col-span-1 space-y-4">
             <VideoRecorder
               sessionId={sessionId!}
               candidateName={(session?.full_name as string) || "Candidate"}
@@ -496,6 +540,21 @@ const CandidateExam = () => {
               autoStart={recordingRequired}
               mandatory={recordingRequired}
             />
+            
+            {/* Permanent reminder that recording is active */}
+            {isRecording && (
+              <Card className="border-red-500">
+                <CardContent className="py-4">
+                  <div className="flex items-center gap-2">
+                    <div className="w-3 h-3 rounded-full bg-red-500 animate-pulse" />
+                    <p className="text-sm font-semibold">Your exam is being monitored</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">
+                    Camera, microphone, and screen are recording
+                  </p>
+                </CardContent>
+              </Card>
+            )}
           </div>
 
           {/* Exam Content */}

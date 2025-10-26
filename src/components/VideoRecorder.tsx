@@ -8,11 +8,13 @@ import { Play, Square, Camera, Mic, Monitor, AlertTriangle, Upload } from "lucid
 import { supabase } from "@/integrations/supabase/client";
 // Prefer secure server-side upload via Supabase Edge Function
 
-// Configurable via .env (optional)
-const RECORDING_FPS = Number(import.meta.env.VITE_RECORDING_FPS) || 30;
-const VIDEO_BITRATE = Number(import.meta.env.VITE_VIDEO_BITRATE) || 500_000; // bps
-const AUDIO_BITRATE = Number(import.meta.env.VITE_AUDIO_BITRATE) || 64_000; // bps
+// Configurable via .env (optional) - Optimized defaults for efficiency
+const RECORDING_FPS = Number(import.meta.env.VITE_RECORDING_FPS) || 24; // Reduced from 30 to 24 FPS
+const VIDEO_BITRATE = Number(import.meta.env.VITE_VIDEO_BITRATE) || 400_000; // Reduced from 500k to 400k bps
+const AUDIO_BITRATE = Number(import.meta.env.VITE_AUDIO_BITRATE) || 48_000; // Reduced from 64k to 48k bps
 const PIP_WIDTH_RATIO = Number(import.meta.env.VITE_PIP_WIDTH_RATIO) || 0.2; // 20% of width
+const CHUNK_DURATION_MS = Number(import.meta.env.VITE_CHUNK_DURATION_MS) || 60000; // 1 minute chunks
+const MAX_CANVAS_WIDTH = Number(import.meta.env.VITE_MAX_CANVAS_WIDTH) || 1280; // Max width for recording
 
 interface VideoRecorderProps {
   sessionId: string;
@@ -33,7 +35,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   const [isUploading, setIsUploading] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
 
-  const recorderRef = useRef<any>(null);
+  const recorderRef = useRef<MediaRecorder | null>(null);
   const screenStreamRef = useRef<MediaStream | null>(null);
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -42,6 +44,8 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const compositeStreamRef = useRef<MediaStream | null>(null);
   const animationFrameRef = useRef<number | null>(null);
+  const broadcastIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const realtimeChannelRef = useRef<ReturnType<typeof supabase.channel> | null>(null);
 
   useEffect(() => {
     checkPermissions();
@@ -49,8 +53,15 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
       }
+      if (broadcastIntervalRef.current) {
+        clearInterval(broadcastIntervalRef.current);
+      }
+      if (realtimeChannelRef.current) {
+        supabase.removeChannel(realtimeChannelRef.current);
+      }
       stopAllStreams();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Auto-start recording if required
@@ -62,6 +73,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       }, 1000);
       return () => clearTimeout(timer);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoStart, hasPermissions, isRecording, error]);
 
   const checkPermissions = async () => {
@@ -87,6 +99,13 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   const startRecording = async () => {
     try {
       setError(null);
+      
+      // Set isRecording to true FIRST to render the video element
+      // This ensures webcamPreviewRef.current exists before we set the stream
+      setIsRecording(true);
+      
+      // Small delay to ensure the video element is rendered in DOM
+      await new Promise(resolve => setTimeout(resolve, 200));
       
       // Request screen capture
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
@@ -117,28 +136,61 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       screenStreamRef.current = screenStream;
       webcamStreamRef.current = webcamStream;
 
-      // Show webcam preview
+      // Setup webcam preview FIRST before recording starts
+      // This ensures the candidate can see their face immediately
+      console.log('Setting up webcam preview...');
+      
+      // Small delay to ensure DOM is ready
+      await new Promise(resolve => setTimeout(resolve, 100));
+      
       if (webcamPreviewRef.current) {
-        console.log('Setting up webcam preview...');
         const videoElement = webcamPreviewRef.current;
+        
+        // Set the webcam stream to the video element
         videoElement.srcObject = webcamStream;
         
-        // Ensure video loads and plays
-        videoElement.onloadedmetadata = () => {
-          console.log('Webcam preview metadata loaded, starting playback');
-          videoElement.play()
-            .then(() => console.log('Webcam preview playing successfully'))
-            .catch(err => {
-              console.error('Error playing webcam preview:', err);
-              toast.error('Failed to display camera preview');
-            });
-        };
+        // Force video attributes
+        videoElement.autoplay = true;
+        videoElement.muted = true;
+        videoElement.playsInline = true;
         
-        // Handle errors
-        videoElement.onerror = (err) => {
-          console.error('Video element error:', err);
-          toast.error('Camera display error');
-        };
+        // Wait for metadata to load
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            console.warn('Webcam preview timeout - continuing anyway');
+            resolve();
+          }, 3000);
+          
+          videoElement.onloadedmetadata = async () => {
+            clearTimeout(timeout);
+            console.log('Webcam preview metadata loaded:', {
+              videoWidth: videoElement.videoWidth,
+              videoHeight: videoElement.videoHeight,
+              readyState: videoElement.readyState
+            });
+            
+            try {
+              await videoElement.play();
+              console.log('Webcam preview playing successfully');
+              resolve();
+            } catch (err) {
+              console.error('Error playing webcam preview:', err);
+              toast.error('Failed to start camera preview');
+              reject(err);
+            }
+          };
+          
+          videoElement.onerror = (err) => {
+            clearTimeout(timeout);
+            console.error('Video element error:', err);
+            toast.error('Camera display error');
+            reject(err);
+          };
+        });
+        
+        console.log('Webcam preview setup complete');
+      } else {
+        console.warn('Webcam preview element not found in DOM');
       }
 
       // Create composite stream with canvas (screen + webcam overlay)
@@ -148,11 +200,22 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       const ctx = canvas.getContext('2d');
       if (!ctx) throw new Error('Could not get canvas context');
 
-      // Set canvas size to match screen stream
+      // Set canvas size to match screen stream, but cap at max width for efficiency
       const screenTrack = screenStream.getVideoTracks()[0];
       const screenSettings = screenTrack.getSettings();
-      canvas.width = screenSettings.width || 1920;
-      canvas.height = screenSettings.height || 1080;
+      const originalWidth = screenSettings.width || 1920;
+      const originalHeight = screenSettings.height || 1080;
+      
+      // Scale down if necessary to reduce file size
+      if (originalWidth > MAX_CANVAS_WIDTH) {
+        const scale = MAX_CANVAS_WIDTH / originalWidth;
+        canvas.width = MAX_CANVAS_WIDTH;
+        canvas.height = Math.round(originalHeight * scale);
+        console.log(`Canvas scaled down from ${originalWidth}x${originalHeight} to ${canvas.width}x${canvas.height}`);
+      } else {
+        canvas.width = originalWidth;
+        canvas.height = originalHeight;
+      }
 
       // Create video elements for compositing
       const screenVideo = document.createElement('video');
@@ -213,6 +276,9 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       const compositeStream = canvas.captureStream(RECORDING_FPS);
       compositeStreamRef.current = compositeStream;
       
+      // Initialize live streaming to admin dashboard
+      initializeLiveStreaming(canvas);
+      
       // Add audio tracks to composite stream
       const audioTracks = screenStream.getAudioTracks().length > 0 
         ? screenStream.getAudioTracks() 
@@ -223,17 +289,32 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
 
       // Create recorder with optimized settings for smaller file sizes
+      // Try VP9 first (better compression), fall back to VP8
+      let mimeType = 'video/webm;codecs=vp9,opus';
+      if (!MediaRecorder.isTypeSupported(mimeType)) {
+        mimeType = 'video/webm;codecs=vp8,opus';
+        console.log('VP9 not supported, using VP8');
+      } else {
+        console.log('Using VP9 codec for better compression');
+      }
+      
       const recorder = new MediaRecorder(compositeStream, {
-        mimeType: 'video/webm;codecs=vp8',
+        mimeType: mimeType,
         videoBitsPerSecond: VIDEO_BITRATE,
         audioBitsPerSecond: AUDIO_BITRATE
       });
 
       const chunks: BlobPart[] = [];
+      let chunkCount = 0;
       
       recorder.ondataavailable = (event) => {
         if (event.data.size > 0) {
           chunks.push(event.data);
+          chunkCount++;
+          
+          // Log chunk info for debugging
+          const chunkSizeMB = (event.data.size / (1024 * 1024)).toFixed(2);
+          console.log(`Chunk ${chunkCount} recorded: ${chunkSizeMB}MB`);
         }
       };
 
@@ -292,9 +373,11 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
 
       recorderRef.current = recorder;
-      recorder.start(1000); // Collect data every second
+      // Collect data in larger chunks (5 seconds) for better efficiency
+      recorder.start(5000); // Collect data every 5 seconds instead of 1 second
       
-      setIsRecording(true);
+      // isRecording already set to true earlier to render video element
+      // setIsRecording(true); // Already done at start of function
       startTimeRef.current = Date.now();
       
       // Start timer
@@ -334,10 +417,64 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
     }
   };
 
+  const initializeLiveStreaming = async (canvas: HTMLCanvasElement) => {
+    try {
+      // Create a Supabase Realtime channel for broadcasting video frames
+      const channel = supabase.channel(`live-video-${sessionId}`, {
+        config: {
+          broadcast: { self: false }
+        }
+      });
+      
+      await channel.subscribe();
+      realtimeChannelRef.current = channel;
+      
+      console.log('Live streaming initialized for session:', sessionId);
+      
+      // Broadcast frames every 2 seconds (to reduce bandwidth)
+      // For production, consider using WebRTC for better real-time performance
+      broadcastIntervalRef.current = setInterval(() => {
+        if (canvas && isRecording) {
+          try {
+            // Capture frame from canvas at reduced quality for live streaming
+            const frameData = canvas.toDataURL('image/jpeg', 0.5); // 50% quality
+            
+            // Broadcast frame to admin dashboard
+            channel.send({
+              type: 'broadcast',
+              event: 'video-frame',
+              payload: {
+                frame: frameData,
+                sessionId: sessionId,
+                timestamp: Date.now()
+              }
+            });
+          } catch (error) {
+            console.error('Error broadcasting video frame:', error);
+          }
+        }
+      }, 2000); // Broadcast every 2 seconds
+      
+    } catch (error) {
+      console.error('Error initializing live streaming:', error);
+      // Don't block recording if live streaming fails
+    }
+  };
+
   const stopAllStreams = () => {
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current);
       animationFrameRef.current = null;
+    }
+    
+    if (broadcastIntervalRef.current) {
+      clearInterval(broadcastIntervalRef.current);
+      broadcastIntervalRef.current = null;
+    }
+    
+    if (realtimeChannelRef.current) {
+      supabase.removeChannel(realtimeChannelRef.current);
+      realtimeChannelRef.current = null;
     }
 
     if (screenStreamRef.current) {
@@ -555,32 +692,43 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
           </div>
         )}
 
-        {/* Webcam Preview - Shows candidate's face during exam */}
-        {isRecording && (
+        {/* Webcam Preview - Always render but hide when not recording */}
+        {/* This ensures the video element exists in DOM before we set the stream */}
+        <div className={isRecording ? 'block mt-4' : 'hidden'}>
           <div className="mt-4">
-            <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
-              <Camera className="h-4 w-4" />
-              Your Camera View
+            <h4 className="text-sm font-semibold mb-2 flex items-center gap-2 text-primary">
+              <Camera className="h-5 w-5" />
+              Your Camera View - You Are Being Monitored
             </h4>
-            <div className="relative rounded-lg overflow-hidden border-2 border-primary bg-gray-900">
+            <div className="relative rounded-lg overflow-hidden border-4 border-red-500 bg-black shadow-lg">
               <video
                 ref={webcamPreviewRef}
                 autoPlay
                 muted
                 playsInline
-                className="w-full h-auto"
-                style={{ maxHeight: '200px', minHeight: '150px', objectFit: 'cover' }}
+                className="w-full h-auto bg-black"
+                style={{ 
+                  maxHeight: '300px', 
+                  minHeight: '200px', 
+                  objectFit: 'contain',
+                  display: 'block'
+                }}
               />
-              <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
-                <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
-                LIVE
+              <div className="absolute top-3 left-3 bg-red-600 text-white text-sm font-bold px-3 py-1.5 rounded-md flex items-center gap-2 shadow-lg">
+                <div className="w-3 h-3 rounded-full bg-white animate-pulse" />
+                LIVE RECORDING
+              </div>
+              <div className="absolute bottom-3 left-3 right-3 bg-black/80 text-white text-xs px-3 py-2 rounded-md">
+                <p className="font-medium">✓ Your face is visible and being recorded</p>
               </div>
             </div>
-            <p className="text-xs text-muted-foreground mt-2">
-              Your face is being recorded and will appear in the bottom-right corner of the exam recording.
-            </p>
+            <div className="mt-3 p-3 bg-blue-50 dark:bg-blue-950 border-l-4 border-blue-500 rounded">
+              <p className="text-sm font-medium text-blue-900 dark:text-blue-100">
+                📹 This is what's being recorded: Your face will appear in the bottom-right corner of your screen recording for exam supervision.
+              </p>
+            </div>
           </div>
-        )}
+        </div>
 
         {/* Hidden canvas for compositing */}
         <canvas ref={canvasRef} style={{ display: 'none' }} />

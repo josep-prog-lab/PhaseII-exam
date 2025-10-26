@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
+import LiveVideoStream from "@/components/LiveVideoStream";
 import { 
   Users, 
   Clock, 
@@ -11,7 +12,8 @@ import {
   Eye, 
   AlertCircle,
   CheckCircle2,
-  Radio
+  Radio,
+  Monitor
 } from "lucide-react";
 
 interface ActiveSession {
@@ -30,6 +32,7 @@ const LiveMonitoring = () => {
   const navigate = useNavigate();
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showVideoGrid, setShowVideoGrid] = useState(true);
 
   useEffect(() => {
     loadActiveSessions();
@@ -63,6 +66,8 @@ const LiveMonitoring = () => {
 
   const loadActiveSessions = async () => {
     try {
+      // Only fetch sessions with 'in_progress' status
+      // This automatically filters out completed and abandoned sessions
       const { data, error } = await supabase
         .from('candidate_sessions')
         .select(`
@@ -78,7 +83,17 @@ const LiveMonitoring = () => {
         .order('started_at', { ascending: false });
 
       if (error) throw error;
-      setActiveSessions(data || []);
+      
+      // Filter out any sessions that might have been closed/completed
+      // Also remove sessions that have been running for more than 24 hours (likely abandoned)
+      const now = new Date();
+      const filteredData = (data || []).filter(session => {
+        const startTime = new Date(session.started_at);
+        const hoursElapsed = (now.getTime() - startTime.getTime()) / (1000 * 60 * 60);
+        return hoursElapsed < 24; // Remove sessions older than 24 hours
+      });
+      
+      setActiveSessions(filteredData);
     } catch (error) {
       console.error('Error loading active sessions:', error);
     } finally {
@@ -116,22 +131,81 @@ const LiveMonitoring = () => {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="flex items-center gap-2">
-          <Radio className="h-5 w-5 text-red-500 animate-pulse" />
-          Live Exam Monitoring
-          <Badge variant="destructive" className="ml-auto">
-            {activeSessions.length} Active
-          </Badge>
-        </CardTitle>
-        <CardDescription>
-          Real-time view of candidates currently taking exams
-        </CardDescription>
+        <div className="flex items-center justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 mb-2">
+              <Radio className="h-5 w-5 text-red-500 animate-pulse" />
+              Live Exam Monitoring
+              <Badge variant="destructive" className="ml-2">
+                {activeSessions.length} Active
+              </Badge>
+            </CardTitle>
+            <CardDescription>
+              Real-time view of candidates currently taking exams
+            </CardDescription>
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowVideoGrid(!showVideoGrid)}
+          >
+            <Monitor className="h-4 w-4 mr-2" />
+            {showVideoGrid ? 'Hide Video' : 'Show Video'}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent>
         {activeSessions.length === 0 ? (
           <div className="text-center py-8">
             <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
             <p className="text-muted-foreground">No active exam sessions at the moment</p>
+          </div>
+        ) : showVideoGrid ? (
+          <div className="space-y-6">
+            {/* Video Grid View */}
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {activeSessions.map((session) => (
+                <LiveVideoStream
+                  key={session.id}
+                  sessionId={session.id}
+                  candidateName={session.full_name}
+                  isActive={true}
+                />
+              ))}
+            </div>
+            
+            {/* Candidate Details Below Videos */}
+            <div className="border-t pt-4">
+              <h3 className="text-sm font-semibold mb-3">Session Details</h3>
+              <div className="space-y-2">
+                {activeSessions.map((session) => (
+                  <div
+                    key={`details-${session.id}`}
+                    className="flex items-center justify-between p-2 rounded-lg bg-muted/50"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="w-2 h-2 rounded-full bg-green-500 animate-pulse" />
+                      <div>
+                        <p className="text-sm font-medium">{session.full_name}</p>
+                        <p className="text-xs text-muted-foreground">{session.exam.title}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      <div className="text-xs text-muted-foreground">
+                        {getElapsedTime(session.started_at)}
+                      </div>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => navigate(`/admin/session/${session.id}/review`)}
+                      >
+                        <Eye className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
           </div>
         ) : (
           <div className="space-y-4">
