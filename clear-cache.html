@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clear Service Worker Cache</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 600px;
+            margin: 50px auto;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        button {
+            background: #007bff;
+            color: white;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 4px;
+            cursor: pointer;
+            margin: 10px 5px;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #0056b3;
+        }
+        .danger {
+            background: #dc3545;
+        }
+        .danger:hover {
+            background: #c82333;
+        }
+        .success {
+            background: #28a745;
+        }
+        .success:hover {
+            background: #218838;
+        }
+        .log {
+            background: #f8f9fa;
+            border: 1px solid #dee2e6;
+            border-radius: 4px;
+            padding: 15px;
+            margin: 20px 0;
+            font-family: monospace;
+            white-space: pre-wrap;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🔧 Service Worker Cache Manager</h1>
+        <p>Use this tool to clear Service Worker cache and resolve development issues.</p>
+        
+        <div>
+            <button onclick="clearAllCaches()">Clear All Caches</button>
+            <button onclick="unregisterServiceWorkers()" class="danger">Unregister Service Workers</button>
+            <button onclick="reloadPage()" class="success">Reload Page</button>
+        </div>
+        
+        <div id="log" class="log">Ready to clear cache...</div>
+    </div>
+
+    <script>
+        function log(message) {
+            const logDiv = document.getElementById('log');
+            logDiv.textContent += new Date().toLocaleTimeString() + ': ' + message + '\n';
+            logDiv.scrollTop = logDiv.scrollHeight;
+        }
+
+        async function clearAllCaches() {
+            log('Starting cache clearing process...');
+            
+            if ('caches' in window) {
+                try {
+                    const cacheNames = await caches.keys();
+                    log(`Found ${cacheNames.length} caches: ${cacheNames.join(', ')}`);
+                    
+                    await Promise.all(
+                        cacheNames.map(async (cacheName) => {
+                            await caches.delete(cacheName);
+                            log(`Deleted cache: ${cacheName}`);
+                        })
+                    );
+                    
+                    log('✅ All caches cleared successfully!');
+                } catch (error) {
+                    log(`❌ Error clearing caches: ${error.message}`);
+                }
+            } else {
+                log('❌ Caches API not supported in this browser');
+            }
+        }
+
+        async function unregisterServiceWorkers() {
+            log('Starting Service Worker unregistration...');
+            
+            if ('serviceWorker' in navigator) {
+                try {
+                    const registrations = await navigator.serviceWorker.getRegistrations();
+                    log(`Found ${registrations.length} service workers`);
+                    
+                    await Promise.all(
+                        registrations.map(async (registration) => {
+                            await registration.unregister();
+                            log(`Unregistered service worker: ${registration.scope}`);
+                        })
+                    );
+                    
+                    log('✅ All service workers unregistered!');
+                } catch (error) {
+                    log(`❌ Error unregistering service workers: ${error.message}`);
+                }
+            } else {
+                log('❌ Service Worker API not supported in this browser');
+            }
+        }
+
+        function reloadPage() {
+            log('Reloading page...');
+            window.location.reload();
+        }
+
+        // Auto-run on page load
+        window.addEventListener('load', () => {
+            log('Cache manager loaded. Click buttons above to clear cache.');
+        });
+    </script>
+</body>
+</html>
