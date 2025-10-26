@@ -377,9 +377,11 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
           chunks.push(event.data);
           chunkCount++;
           
-          // Log chunk info for debugging
+          // Log chunk info for debugging (every 5 chunks to reduce spam)
           const chunkSizeMB = (event.data.size / (1024 * 1024)).toFixed(2);
-          if (import.meta.env.DEV) console.log(`Chunk ${chunkCount} recorded: ${chunkSizeMB}MB`);
+          if (chunkCount % 5 === 0) {
+            console.log(`[VideoRecorder] Chunk ${chunkCount} recorded: ${chunkSizeMB}MB`);
+          }
         }
       };
 
@@ -507,11 +509,11 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
       
       const subscribeStatus = await channel.subscribe();
-      if (import.meta.env.DEV) console.log('Live streaming channel subscription status:', subscribeStatus);
+      console.log('[VideoRecorder] Live streaming channel subscription status:', subscribeStatus);
       
       realtimeChannelRef.current = channel;
       
-      console.log('Live streaming initialized for session:', sessionId);
+      console.log('[VideoRecorder] Live streaming initialized for session:', sessionId);
       
       let frameCount = 0;
       
@@ -525,8 +527,9 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
             const frameData = canvas.toDataURL('image/jpeg', 0.35); // 35% quality
             frameCount++;
             
-            if (import.meta.env.DEV) {
-              console.log(`Broadcasting frame ${frameCount} for session ${sessionId} (size: ${(frameData.length / 1024).toFixed(1)}KB)`);
+            // Log every 10th frame to reduce console spam but keep visibility
+            if (frameCount % 10 === 0) {
+              console.log(`[VideoRecorder] Broadcasting frame ${frameCount} for session ${sessionId} (size: ${(frameData.length / 1024).toFixed(1)}KB)`);
             }
             
             // Broadcast frame to admin dashboard
@@ -540,9 +543,12 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
                 frameNumber: frameCount
               }
             }).then(() => {
-              if (import.meta.env.DEV) console.log(`Frame ${frameCount} sent successfully`);
+              // Log success every 10th frame
+              if (frameCount % 10 === 0) {
+                console.log(`[VideoRecorder] Frame ${frameCount} sent successfully`);
+              }
             }).catch((err) => {
-              console.error(`Error sending frame ${frameCount}:`, err);
+              console.error(`[VideoRecorder] Error sending frame ${frameCount}:`, err);
             });
           } catch (error) {
             console.error('Error broadcasting video frame:', error);

@@ -1,5 +1,5 @@
 // Service Worker for Exam Space PWA
-const CACHE_NAME = 'exam-space-v2'; // bump when changing caching strategy
+const CACHE_NAME = 'exam-space-v3'; // bump when changing caching strategy - v3 for live streaming fixes
 const urlsToCache = [
   '/',
   '/index.html',
