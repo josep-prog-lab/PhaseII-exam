@@ -314,7 +314,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
           
           // Log chunk info for debugging
           const chunkSizeMB = (event.data.size / (1024 * 1024)).toFixed(2);
-          console.log(`Chunk ${chunkCount} recorded: ${chunkSizeMB}MB`);
+          if (import.meta.env.DEV) console.log(`Chunk ${chunkCount} recorded: ${chunkSizeMB}MB`);
         }
       };
 
@@ -428,7 +428,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
       
       const subscribeStatus = await channel.subscribe();
-      console.log('Live streaming channel subscription status:', subscribeStatus);
+      if (import.meta.env.DEV) console.log('Live streaming channel subscription status:', subscribeStatus);
       
       realtimeChannelRef.current = channel;
       
@@ -436,17 +436,19 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       
       let frameCount = 0;
       
-      // Broadcast frames every 2 seconds (to reduce bandwidth)
+      // Broadcast frames every 1 second for more real-time updates
       // For production, consider using WebRTC for better real-time performance
       broadcastIntervalRef.current = setInterval(() => {
         // Don't check isRecording state - just check if canvas exists
         if (canvas && canvasRef.current) {
           try {
             // Capture frame from canvas at reduced quality for live streaming
-            const frameData = canvas.toDataURL('image/jpeg', 0.4); // 40% quality
+            const frameData = canvas.toDataURL('image/jpeg', 0.35); // 35% quality
             frameCount++;
             
-            console.log(`Broadcasting frame ${frameCount} for session ${sessionId} (size: ${(frameData.length / 1024).toFixed(1)}KB)`);
+            if (import.meta.env.DEV) {
+              console.log(`Broadcasting frame ${frameCount} for session ${sessionId} (size: ${(frameData.length / 1024).toFixed(1)}KB)`);
+            }
             
             // Broadcast frame to admin dashboard
             channel.send({
@@ -459,7 +461,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
                 frameNumber: frameCount
               }
             }).then(() => {
-              console.log(`Frame ${frameCount} sent successfully`);
+              if (import.meta.env.DEV) console.log(`Frame ${frameCount} sent successfully`);
             }).catch((err) => {
               console.error(`Error sending frame ${frameCount}:`, err);
             });
@@ -469,7 +471,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
         } else {
           console.warn('Canvas not available for broadcasting');
         }
-      }, 2000); // Broadcast every 2 seconds
+      }, 1000); // Broadcast every 1 second
       
     } catch (error) {
       console.error('Error initializing live streaming:', error);

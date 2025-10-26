@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, memo } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,7 @@ interface LiveVideoStreamProps {
   sessionId: string;
   candidateName: string;
   isActive: boolean;
+  onStreamStatusChange?: (sessionId: string, isStreaming: boolean) => void;
 }
 
 /**
@@ -22,7 +23,7 @@ interface LiveVideoStreamProps {
  * peer-to-peer video streaming. This implementation uses a simplified approach
  * with periodic frame updates via Supabase Realtime channels.
  */
-const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStreamProps) => {
+const LiveVideoStream = ({ sessionId, candidateName, isActive, onStreamStatusChange }: LiveVideoStreamProps) => {
   const [isStreaming, setIsStreaming] = useState(false);
   const [lastFrameUpdate, setLastFrameUpdate] = useState<Date | null>(null);
   const [streamHealth, setStreamHealth] = useState<'good' | 'fair' | 'poor'>('good');
@@ -62,18 +63,25 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
         .on('broadcast', { event: 'video-frame' }, (payload) => {
           if (payload.payload && payload.payload.frame) {
             renderFrame(payload.payload.frame);
-            setLastFrameUpdate(new Date());
-            setIsStreaming(true);
+            const now = new Date();
+            setLastFrameUpdate(now);
+            if (!isStreaming) {
+              setIsStreaming(true);
+              onStreamStatusChange?.(sessionId, true);
+            }
           }
         })
         .subscribe((status) => {
           if (status === 'SUBSCRIBED') {
             console.log(`Subscribed to live video stream for session ${sessionId}`);
-            setIsStreaming(true);
+            // Do not mark as streaming until frames arrive
           } else if (status === 'CHANNEL_ERROR') {
             console.error('Channel subscription error');
             setError('Failed to connect to live stream');
-            setIsStreaming(false);
+            if (isStreaming) {
+              setIsStreaming(false);
+              onStreamStatusChange?.(sessionId, false);
+            }
           }
         });
 
@@ -102,6 +110,9 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
       healthCheckIntervalRef.current = null;
     }
     
+    if (isStreaming) {
+      onStreamStatusChange?.(sessionId, false);
+    }
     setIsStreaming(false);
   };
 
@@ -125,6 +136,10 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
   const checkStreamHealth = () => {
     if (!lastFrameUpdate) {
       setStreamHealth('poor');
+      if (isStreaming) {
+        onStreamStatusChange?.(sessionId, false);
+        setIsStreaming(false);
+      }
       return;
     }
 
@@ -138,6 +153,10 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
     } else {
       setStreamHealth('poor');
       setError('Stream may have disconnected');
+      if (isStreaming) {
+        onStreamStatusChange?.(sessionId, false);
+        setIsStreaming(false);
+      }
     }
   };
 
@@ -212,8 +231,8 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
           
           <canvas
             ref={canvasRef}
-            width={640}
-            height={360}
+            width={480}
+            height={270}
             className="w-full h-full object-cover"
           />
           
@@ -235,4 +254,4 @@ const LiveVideoStream = ({ sessionId, candidateName, isActive }: LiveVideoStream
   );
 };
 
-export default LiveVideoStream;
+export default memo(LiveVideoStream);

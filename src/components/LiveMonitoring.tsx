@@ -5,6 +5,7 @@ import { Button } from "@/components/ui/button";
 import { supabase } from "@/integrations/supabase/client";
 import { useNavigate } from "react-router-dom";
 import LiveVideoStream from "@/components/LiveVideoStream";
+import LiveStreamProbe from "@/components/LiveStreamProbe";
 import { 
   Users, 
   Clock, 
@@ -33,6 +34,8 @@ const LiveMonitoring = () => {
   const [activeSessions, setActiveSessions] = useState<ActiveSession[]>([]);
   const [loading, setLoading] = useState(true);
   const [showVideoGrid, setShowVideoGrid] = useState(true);
+  // Track which sessions are actually streaming frames right now
+  const [streamingMap, setStreamingMap] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     loadActiveSessions();
@@ -94,6 +97,12 @@ const LiveMonitoring = () => {
       });
       
       setActiveSessions(filteredData);
+      // Reset streaming map for sessions that no longer exist
+      setStreamingMap((prev) => {
+        const next: Record<string, boolean> = {};
+        filteredData.forEach(s => { next[s.id] = prev[s.id] || false; });
+        return next;
+      });
     } catch (error) {
       console.error('Error loading active sessions:', error);
     } finally {
@@ -128,6 +137,9 @@ const LiveMonitoring = () => {
     );
   }
 
+  // Only consider sessions that are actively streaming frames in the last few seconds
+  const liveSessions = activeSessions.filter(s => streamingMap[s.id]);
+
   return (
     <Card>
       <CardHeader>
@@ -137,7 +149,7 @@ const LiveMonitoring = () => {
               <Radio className="h-5 w-5 text-red-500 animate-pulse" />
               Live Exam Monitoring
               <Badge variant="destructive" className="ml-2">
-                {activeSessions.length} Active
+                {liveSessions.length} Active
               </Badge>
             </CardTitle>
             <CardDescription>
@@ -155,7 +167,17 @@ const LiveMonitoring = () => {
         </div>
       </CardHeader>
       <CardContent>
-        {activeSessions.length === 0 ? (
+        {/* Invisible probes subscribe to all sessions and update streamingMap */}
+        <div className="hidden">
+          {activeSessions.map((s) => (
+            <LiveStreamProbe
+              key={`probe-${s.id}`}
+              sessionId={s.id}
+              onActiveChange={(id, active) => setStreamingMap((prev) => ({ ...prev, [id]: active }))}
+            />
+          ))}
+        </div>
+        {liveSessions.length === 0 ? (
           <div className="text-center py-8">
             <Users className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
             <p className="text-muted-foreground">No active exam sessions at the moment</p>
@@ -164,12 +186,15 @@ const LiveMonitoring = () => {
           <div className="space-y-6">
             {/* Video Grid View */}
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {activeSessions.map((session) => (
+              {liveSessions.map((session) => (
                 <LiveVideoStream
                   key={session.id}
                   sessionId={session.id}
                   candidateName={session.full_name}
                   isActive={true}
+                  onStreamStatusChange={(id, isStreaming) => {
+                    setStreamingMap((prev) => ({ ...prev, [id]: isStreaming }));
+                  }}
                 />
               ))}
             </div>
@@ -178,7 +203,7 @@ const LiveMonitoring = () => {
             <div className="border-t pt-4">
               <h3 className="text-sm font-semibold mb-3">Session Details</h3>
               <div className="space-y-2">
-                {activeSessions.map((session) => (
+                {liveSessions.map((session) => (
                   <div
                     key={`details-${session.id}`}
                     className="flex items-center justify-between p-2 rounded-lg bg-muted/50"
@@ -209,7 +234,7 @@ const LiveMonitoring = () => {
           </div>
         ) : (
           <div className="space-y-4">
-            {activeSessions.map((session) => (
+            {liveSessions.map((session) => (
               <div
                 key={session.id}
                 className="border rounded-lg p-4 hover:bg-accent/50 transition-colors"
