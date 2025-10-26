@@ -99,13 +99,15 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   const startRecording = async () => {
     try {
       setError(null);
+      console.log('[VideoRecorder] Starting recording process...');
       
       // Set isRecording to true FIRST to render the video element
       // This ensures webcamPreviewRef.current exists before we set the stream
       setIsRecording(true);
       
-      // Small delay to ensure the video element is rendered in DOM
-      await new Promise(resolve => setTimeout(resolve, 200));
+      // Longer delay to ensure React has time to render the video element
+      // Production builds need more time than development
+      await new Promise(resolve => setTimeout(resolve, 500));
       
       // Request screen capture
       const screenStream = await navigator.mediaDevices.getDisplayMedia({
@@ -117,7 +119,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
 
       // Request webcam and microphone
-      console.log('Requesting webcam and microphone...');
+      console.log('[VideoRecorder] Requesting webcam and microphone...');
       const webcamStream = await navigator.mediaDevices.getUserMedia({
         video: {
           width: { ideal: 1280 },
@@ -127,10 +129,11 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
         audio: true
       });
 
-      console.log('Webcam stream obtained:', {
+      console.log('[VideoRecorder] Webcam stream obtained:', {
         videoTracks: webcamStream.getVideoTracks().length,
         audioTracks: webcamStream.getAudioTracks().length,
-        videoSettings: webcamStream.getVideoTracks()[0]?.getSettings()
+        videoSettings: webcamStream.getVideoTracks()[0]?.getSettings(),
+        streamActive: webcamStream.active
       });
 
       screenStreamRef.current = screenStream;
@@ -138,60 +141,122 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
 
       // Setup webcam preview FIRST before recording starts
       // This ensures the candidate can see their face immediately
-      console.log('Setting up webcam preview...');
+      console.log('[VideoRecorder] Setting up webcam preview...');
       
-      // Small delay to ensure DOM is ready
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      if (webcamPreviewRef.current) {
-        const videoElement = webcamPreviewRef.current;
-        
-        // Set the webcam stream to the video element
-        videoElement.srcObject = webcamStream;
-        
-        // Force video attributes
-        videoElement.autoplay = true;
-        videoElement.muted = true;
-        videoElement.playsInline = true;
-        
-        // Wait for metadata to load
-        await new Promise<void>((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            console.warn('Webcam preview timeout - continuing anyway');
-            resolve();
-          }, 3000);
-          
-          videoElement.onloadedmetadata = async () => {
-            clearTimeout(timeout);
-            console.log('Webcam preview metadata loaded:', {
-              videoWidth: videoElement.videoWidth,
-              videoHeight: videoElement.videoHeight,
-              readyState: videoElement.readyState
-            });
-            
-            try {
-              await videoElement.play();
-              console.log('Webcam preview playing successfully');
-              resolve();
-            } catch (err) {
-              console.error('Error playing webcam preview:', err);
-              toast.error('Failed to start camera preview');
-              reject(err);
-            }
-          };
-          
-          videoElement.onerror = (err) => {
-            clearTimeout(timeout);
-            console.error('Video element error:', err);
-            toast.error('Camera display error');
-            reject(err);
-          };
-        });
-        
-        console.log('Webcam preview setup complete');
-      } else {
-        console.warn('Webcam preview element not found in DOM');
+      // Wait for video element to be ready with polling
+      let retries = 0;
+      const maxRetries = 20;
+      while (!webcamPreviewRef.current && retries < maxRetries) {
+        console.log(`[VideoRecorder] Waiting for video element (attempt ${retries + 1}/${maxRetries})...`);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        retries++;
       }
+      
+      // Final check - if still not available, throw error
+      if (!webcamPreviewRef.current) {
+        console.error('[VideoRecorder] Webcam preview element STILL not found in DOM after polling!');
+        console.log('[VideoRecorder] isRecording state:', isRecording);
+        // Reset recording state
+        setIsRecording(false);
+        throw new Error('Camera preview element not available - UI rendering failed');
+      }
+      
+      const videoElement = webcamPreviewRef.current;
+      console.log('[VideoRecorder] Video element found:', {
+        tagName: videoElement.tagName,
+        parentElement: videoElement.parentElement?.className,
+        isConnected: videoElement.isConnected,
+        offsetWidth: videoElement.offsetWidth,
+        offsetHeight: videoElement.offsetHeight
+      });
+      
+      // CRITICAL: Set the webcam stream to the video element
+      console.log('[VideoRecorder] Setting webcam stream to video element...');
+      videoElement.srcObject = webcamStream;
+      console.log('[VideoRecorder] Stream assigned. Video element srcObject:', {
+        hasStream: !!videoElement.srcObject,
+        streamId: webcamStream.id,
+        streamActive: webcamStream.active
+      });
+      
+      // Force video attributes - more aggressive approach for production
+      videoElement.autoplay = true;
+      videoElement.muted = true;
+      videoElement.playsInline = true;
+      videoElement.controls = false;
+      
+      // Additional attributes for better browser compatibility
+      videoElement.setAttribute('playsinline', 'true');
+      videoElement.setAttribute('webkit-playsinline', 'true');
+      
+      console.log('[VideoRecorder] Video element configured, waiting for metadata...');
+      
+      // Wait for metadata to load
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => {
+          console.warn('[VideoRecorder] Webcam preview timeout - continuing anyway');
+          console.log('[VideoRecorder] Video element state:', {
+            readyState: videoElement.readyState,
+            networkState: videoElement.networkState,
+            paused: videoElement.paused,
+            ended: videoElement.ended
+          });
+          resolve();
+        }, 5000); // Increased timeout for production
+        
+        videoElement.onloadedmetadata = async () => {
+          clearTimeout(timeout);
+          console.log('[VideoRecorder] Webcam preview metadata loaded:', {
+            videoWidth: videoElement.videoWidth,
+            videoHeight: videoElement.videoHeight,
+            readyState: videoElement.readyState,
+            networkState: videoElement.networkState
+          });
+          
+          try {
+            await videoElement.play();
+            console.log('[VideoRecorder] Webcam preview playing successfully');
+            resolve();
+          } catch (err) {
+            console.error('[VideoRecorder] Error playing webcam preview:', err);
+            // Try to play again after a short delay
+            setTimeout(async () => {
+              try {
+                await videoElement.play();
+                console.log('[VideoRecorder] Webcam preview playing after retry');
+                resolve();
+              } catch (retryErr) {
+                console.error('[VideoRecorder] Retry failed:', retryErr);
+                toast.error('Failed to start camera preview');
+                reject(retryErr);
+              }
+            }, 500);
+          }
+        };
+        
+        videoElement.onerror = (err) => {
+          clearTimeout(timeout);
+          console.error('[VideoRecorder] Video element error:', err);
+          toast.error('Camera display error');
+          reject(err);
+        };
+        
+        // Fallback: if video already has metadata loaded
+        if (videoElement.readyState >= 2) {
+          console.log('[VideoRecorder] Video metadata already loaded');
+          clearTimeout(timeout);
+          videoElement.play().then(() => {
+            console.log('[VideoRecorder] Video playing immediately');
+            resolve();
+          }).catch((err) => {
+            console.error('[VideoRecorder] Immediate play failed:', err);
+            resolve(); // Continue anyway
+          });
+        }
+      });
+      
+      console.log('[VideoRecorder] Webcam preview setup complete');
+      toast.success('Camera preview is now visible');
 
       // Create composite stream with canvas (screen + webcam overlay)
       const canvas = canvasRef.current || document.createElement('canvas');
@@ -393,12 +458,26 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
 
       toast.success("Recording started successfully");
     } catch (error) {
-      console.error('Error starting recording:', error);
+      console.error('[VideoRecorder] Error starting recording:', error);
       const errorMessage = error instanceof Error ? error.message : 'Failed to start recording';
       setError(errorMessage);
+      setIsRecording(false); // Reset state on error
+      
+      // Clean up any streams that were started
+      if (screenStreamRef.current) {
+        screenStreamRef.current.getTracks().forEach(track => track.stop());
+        screenStreamRef.current = null;
+      }
+      if (webcamStreamRef.current) {
+        webcamStreamRef.current.getTracks().forEach(track => track.stop());
+        webcamStreamRef.current = null;
+      }
+      
       if (onError) {
         onError(errorMessage);
       }
+      
+      toast.error(`Recording failed: ${errorMessage}`);
     }
   };
 
@@ -710,9 +789,9 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
           </div>
         )}
 
-        {/* Webcam Preview - Always render but hide when not recording */}
-        {/* This ensures the video element exists in DOM before we set the stream */}
-        <div className={isRecording ? 'block mt-4' : 'hidden'}>
+        {/* Webcam Preview - Render when recording starts */}
+        {/* Force visible display to ensure it renders in production */}
+        {isRecording && (
           <div className="mt-4">
             <h4 className="text-sm font-semibold mb-2 flex items-center gap-2 text-primary">
               <Camera className="h-5 w-5" />
@@ -724,13 +803,29 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
                 autoPlay
                 muted
                 playsInline
+                webkit-playsinline="true"
                 className="w-full h-auto bg-black"
                 style={{ 
                   maxHeight: '300px', 
                   minHeight: '200px', 
                   objectFit: 'contain',
-                  display: 'block'
+                  display: 'block',
+                  visibility: 'visible',
+                  backgroundColor: '#000'
                 }}
+                onLoadedMetadata={(e) => {
+                  console.log('[VideoRecorder] Video preview metadata loaded in UI');
+                  const video = e.currentTarget;
+                  console.log('[VideoRecorder] Video dimensions:', {
+                    videoWidth: video.videoWidth,
+                    videoHeight: video.videoHeight,
+                    readyState: video.readyState
+                  });
+                  video.play().catch(err => console.error('[VideoRecorder] Auto-play failed:', err));
+                }}
+                onPlay={() => console.log('[VideoRecorder] Video element started playing')}
+                onPause={() => console.log('[VideoRecorder] Video element paused')}
+                onError={(e) => console.error('[VideoRecorder] Video element error event:', e)}
               />
               <div className="absolute top-3 left-3 bg-red-600 text-white text-sm font-bold px-3 py-1.5 rounded-md flex items-center gap-2 shadow-lg">
                 <div className="w-3 h-3 rounded-full bg-white animate-pulse" />
@@ -746,7 +841,7 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
               </p>
             </div>
           </div>
-        </div>
+        )}
 
         {/* Hidden canvas for compositing */}
         <canvas ref={canvasRef} style={{ display: 'none' }} />

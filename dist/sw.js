@@ -1,5 +1,5 @@
 // Service Worker for Exam Space PWA
-const CACHE_NAME = 'exam-space-v1';
+const CACHE_NAME = 'exam-space-v2'; // bump when changing caching strategy
 const urlsToCache = [
   '/',
   '/index.html',
@@ -71,68 +71,58 @@ function shouldExcludeFromCache(url) {
   });
 }
 
-// Fetch event - serve from cache, fallback to network
+// Fetch event - smarter caching strategy for production
 self.addEventListener('fetch', (event) => {
-  // Skip non-GET requests
-  if (event.request.method !== 'GET') {
+  const url = new URL(event.request.url);
+
+  // Never handle non-GET, Supabase, or websocket requests
+  if (event.request.method !== 'GET') return;
+  if (/supabase\.co/.test(url.host)) return;
+  if (event.request.headers.get('upgrade') === 'websocket') return;
+
+  // Always network-first for SPA navigations (ensures newest app code)
+  if (event.request.mode === 'navigate') {
+    event.respondWith(
+      fetch(event.request).catch(() => caches.match('/index.html'))
+    );
     return;
   }
 
-  // Skip external requests
-  if (!event.request.url.startsWith(self.location.origin)) {
-    return;
-  }
+  // Skip external origins
+  if (!url.origin.startsWith(self.location.origin)) return;
 
-  // In development, skip caching for development files
+  // In development, skip caching for dev files
   if (shouldExcludeFromCache(event.request.url)) {
     console.log('Service Worker: Skipping cache for development file', event.request.url);
     return;
   }
 
-  event.respondWith(
-    caches.match(event.request)
-      .then((response) => {
-        // Return cached version or fetch from network
-        if (response) {
-          console.log('Service Worker: Serving from cache', event.request.url);
-          return response;
-        }
+  // Cache-first for static assets under /assets and icons; network-first otherwise
+  const isStaticAsset = url.pathname.startsWith('/assets') || /\.(png|jpg|jpeg|svg|gif|webp|ico|css|js)$/i.test(url.pathname);
 
-        console.log('Service Worker: Fetching from network', event.request.url);
-        return fetch(event.request)
-          .then((response) => {
-            // Don't cache if not a valid response
-            if (!response || response.status !== 200 || response.type !== 'basic') {
-              return response;
-            }
-
-            // In development, don't cache development files
-            if (shouldExcludeFromCache(event.request.url)) {
-              return response;
-            }
-
-            // Clone the response
-            const responseToCache = response.clone();
-
-            caches.open(CACHE_NAME)
-              .then((cache) => {
-                cache.put(event.request, responseToCache);
-              });
-
-            return response;
-          })
-          .catch((error) => {
-            console.log('Service Worker: Fetch failed', error);
-            // Return offline page or fallback
-            if (event.request.destination === 'document') {
-              return caches.match('/index.html');
-            }
-          });
+  if (isStaticAsset) {
+    event.respondWith(
+      caches.match(event.request).then((cached) => {
+        if (cached) return cached;
+        return fetch(event.request).then((resp) => {
+          if (resp && resp.status === 200 && resp.type === 'basic') {
+            const copy = resp.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
+          }
+          return resp;
+        });
       })
-  );
+    );
+  } else {
+    event.respondWith(
+      fetch(event.request)
+        .then((resp) => resp)
+        .catch(() => caches.match(event.request))
+    );
+  }
 });
 
-// Background sync for exam data
+// Background sync for exam data (currently a no-op)
 self.addEventListener('sync', (event) => {
   if (event.tag === 'exam-sync') {
     console.log('Service Worker: Background sync for exam data');
