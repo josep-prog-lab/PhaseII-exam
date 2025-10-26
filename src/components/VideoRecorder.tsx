@@ -422,22 +422,31 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       // Create a Supabase Realtime channel for broadcasting video frames
       const channel = supabase.channel(`live-video-${sessionId}`, {
         config: {
-          broadcast: { self: false }
+          broadcast: { self: false, ack: false },
+          presence: { key: sessionId }
         }
       });
       
-      await channel.subscribe();
+      const subscribeStatus = await channel.subscribe();
+      console.log('Live streaming channel subscription status:', subscribeStatus);
+      
       realtimeChannelRef.current = channel;
       
       console.log('Live streaming initialized for session:', sessionId);
       
+      let frameCount = 0;
+      
       // Broadcast frames every 2 seconds (to reduce bandwidth)
       // For production, consider using WebRTC for better real-time performance
       broadcastIntervalRef.current = setInterval(() => {
-        if (canvas && isRecording) {
+        // Don't check isRecording state - just check if canvas exists
+        if (canvas && canvasRef.current) {
           try {
             // Capture frame from canvas at reduced quality for live streaming
-            const frameData = canvas.toDataURL('image/jpeg', 0.5); // 50% quality
+            const frameData = canvas.toDataURL('image/jpeg', 0.4); // 40% quality
+            frameCount++;
+            
+            console.log(`Broadcasting frame ${frameCount} for session ${sessionId} (size: ${(frameData.length / 1024).toFixed(1)}KB)`);
             
             // Broadcast frame to admin dashboard
             channel.send({
@@ -446,12 +455,19 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
               payload: {
                 frame: frameData,
                 sessionId: sessionId,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                frameNumber: frameCount
               }
+            }).then(() => {
+              console.log(`Frame ${frameCount} sent successfully`);
+            }).catch((err) => {
+              console.error(`Error sending frame ${frameCount}:`, err);
             });
           } catch (error) {
             console.error('Error broadcasting video frame:', error);
           }
+        } else {
+          console.warn('Canvas not available for broadcasting');
         }
       }, 2000); // Broadcast every 2 seconds
       
