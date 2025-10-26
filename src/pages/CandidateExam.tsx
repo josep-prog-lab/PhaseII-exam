@@ -269,7 +269,8 @@ const CandidateExam = () => {
       console.log("Starting permission request process...");
       setShowPermissionDialog(true);
       
-      // Request camera and microphone permissions
+      // Request camera and microphone permissions only
+      // Screen sharing will be requested by VideoRecorder when recording starts
       console.log("Requesting camera and microphone permissions...");
       const stream = await navigator.mediaDevices.getUserMedia({
         video: true,
@@ -288,37 +289,17 @@ const CandidateExam = () => {
       console.log("Camera and microphone permissions granted");
       toast.success("Camera and microphone permissions granted!");
       
-      // Now request screen sharing
-      console.log("Requesting screen sharing permission...");
-      const screenStream = await navigator.mediaDevices.getDisplayMedia({
-        video: {
-          displaySurface: 'monitor',
-          cursor: 'always'
-        },
-        audio: true
-      });
-      
-      // Stop the screen stream immediately
-      screenStream.getTracks().forEach(track => track.stop());
-      
-      setPermissionStatus(prev => ({
-        ...prev,
-        screen: true
-      }));
-      
-      console.log("Screen sharing permission granted");
-      toast.success("Screen sharing permission granted!");
-      
-      // All permissions granted, start the exam
-      console.log("All permissions granted, starting exam...");
+      // All basic permissions granted, start the exam
+      // Screen sharing will be requested when recording actually starts
+      console.log("Basic permissions granted, starting exam...");
       setExamStarted(true);
       setShowPermissionDialog(false);
       
-      toast.success("All permissions granted! Starting exam...");
+      toast.success("Permissions granted! Starting exam...");
       
     } catch (error) {
       console.error("Permission request failed:", error);
-      toast.error(`Failed to get permissions: ${error instanceof Error ? error.message : 'Unknown error'}. Please allow camera, microphone, and screen sharing to continue.`);
+      toast.error(`Failed to get permissions: ${error instanceof Error ? error.message : 'Unknown error'}. Please allow camera and microphone to continue.`);
     }
   };
 
@@ -337,8 +318,8 @@ const CandidateExam = () => {
         .from("candidate_sessions")
         .update({
           status: 'completed',
-          submitted_at: new Date().toISOString(),
-          recording_url: recordingChecksum || recordingBlob ? 'uploaded' : null // Store status
+          submitted_at: new Date().toISOString()
+          // Do not overwrite recording_url here; VideoRecorder already saved the storage path
         })
         .eq("id", sessionId);
 
@@ -420,7 +401,7 @@ const CandidateExam = () => {
             </div>
             <CardTitle className="text-2xl font-bold">Exam Monitoring Required</CardTitle>
             <CardDescription className="text-lg">
-              To ensure exam integrity, you must enable camera, microphone, and screen sharing before starting.
+              To ensure exam integrity, you must enable camera and microphone. Screen sharing will be requested when the exam begins.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
@@ -443,7 +424,7 @@ const CandidateExam = () => {
                 <Monitor className="h-5 w-5 text-purple-600" />
                 <div>
                   <h4 className="font-semibold text-purple-900">Screen Sharing</h4>
-                  <p className="text-sm text-purple-700">Your entire screen will be recorded</p>
+                  <p className="text-sm text-purple-700">Will be requested when recording starts</p>
                 </div>
               </div>
             </div>

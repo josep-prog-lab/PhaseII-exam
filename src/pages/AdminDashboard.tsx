@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { toast } from "sonner";
 import { LogOut, Plus, FileText, Users, BarChart } from "lucide-react";
+import LiveMonitoring from "@/components/LiveMonitoring";
 
 const AdminDashboard = () => {
   const navigate = useNavigate();
@@ -125,6 +126,11 @@ const AdminDashboard = () => {
               <CardDescription>Access exam results and analytics</CardDescription>
             </CardContent>
           </Card>
+        </div>
+
+        {/* Live Monitoring */}
+        <div className="mb-8">
+          <LiveMonitoring />
         </div>
 
         {/* Recent Activity */}

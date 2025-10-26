@@ -5,6 +5,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Badge } from "@/components/ui/badge";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { toast } from "sonner";
 import { supabase } from "@/integrations/supabase/client";
 import { 
@@ -65,6 +66,7 @@ const SessionReview = () => {
   const [answers, setAnswers] = useState<AnswerData[]>([]);
   const [loading, setLoading] = useState(true);
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
+  const [showVideoPreview, setShowVideoPreview] = useState(false);
 
   useEffect(() => {
     if (sessionId) {
@@ -108,19 +110,22 @@ const SessionReview = () => {
       if (answersError) throw answersError;
       setAnswers(answersData || []);
 
-      // Load video: if URL looks like a Drive link or ID, prefer it; else fallback to Supabase storage
+      // Load video URL - recording_url now stores just the storage path
       if (sessionData.recording_url) {
-        const url: string = sessionData.recording_url;
-        if (url.startsWith('http') && (url.includes('drive.google.com') || url.includes('googleusercontent.com'))) {
-          setVideoUrl(url);
-        } else if (/^[a-zA-Z0-9_-]{20,}$/.test(url)) {
-          // Looks like a Drive file ID
-          setVideoUrl(`https://drive.google.com/uc?id=${url}&export=download`);
-        } else {
-          const { data: videoData } = await supabase.storage
+        try {
+          const { data: videoData, error } = await supabase.storage
             .from('exam-recordings')
-            .createSignedUrl(url, 3600);
-          if (videoData?.signedUrl) setVideoUrl(videoData.signedUrl);
+            .createSignedUrl(sessionData.recording_url, 3600);
+          
+          if (error) {
+            console.error('Error creating signed URL:', error);
+            setVideoUrl(null);
+          } else if (videoData?.signedUrl) {
+            setVideoUrl(videoData.signedUrl);
+          }
+        } catch (error) {
+          console.error('Error loading video URL:', error);
+          setVideoUrl(null);
         }
       }
     } catch (error) {
@@ -142,13 +147,16 @@ const SessionReview = () => {
         .from('exam-recordings')
         .download(session.recording_url);
 
-      if (error) throw error;
+      if (error) {
+        console.error('Download error:', error);
+        throw error;
+      }
 
       // Create download link
       const url = URL.createObjectURL(data);
       const link = document.createElement('a');
       link.href = url;
-      link.download = `exam-recording-${session.full_name}-${session.id}.webm`;
+      link.download = `exam-recording-${session.full_name.replace(/\s+/g, '-')}-${new Date().toISOString().split('T')[0]}.webm`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -157,7 +165,7 @@ const SessionReview = () => {
       toast.success("Recording download started");
     } catch (error) {
       console.error("Error downloading recording:", error);
-      toast.error("Failed to download recording");
+      toast.error("Failed to download recording. The file may not exist or you may not have permission to access it.");
     }
   };
 
@@ -337,11 +345,13 @@ const SessionReview = () => {
                       </p>
                       <div className="flex gap-2">
                         {videoUrl && (
-                          <Button size="sm" variant="outline" asChild>
-                            <a href={videoUrl} target="_blank" rel="noopener noreferrer">
-                              <Play className="mr-2 h-4 w-4" />
-                              Watch
-                            </a>
+                          <Button 
+                            size="sm" 
+                            variant="outline" 
+                            onClick={() => setShowVideoPreview(true)}
+                          >
+                            <Eye className="mr-2 h-4 w-4" />
+                            Preview
                           </Button>
                         )}
                         <Button size="sm" variant="outline" onClick={downloadRecording}>
@@ -476,6 +486,53 @@ const SessionReview = () => {
           </div>
         </div>
       </main>
+
+      {/* Video Preview Dialog */}
+      <Dialog open={showVideoPreview} onOpenChange={setShowVideoPreview}>
+        <DialogContent className="max-w-5xl max-h-[90vh]">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Video className="h-5 w-5" />
+              Recording Preview - {session?.full_name}
+            </DialogTitle>
+            <DialogDescription>
+              Preview the exam recording. This video includes screen capture with the candidate's webcam overlay.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            {videoUrl ? (
+              <div className="relative">
+                <video
+                  controls
+                  className="w-full rounded-lg border"
+                  style={{ maxHeight: '70vh' }}
+                  src={videoUrl}
+                  preload="metadata"
+                >
+                  Your browser does not support video playback.
+                </video>
+                <div className="mt-4 flex gap-2 justify-end">
+                  <Button
+                    variant="outline"
+                    onClick={() => setShowVideoPreview(false)}
+                  >
+                    Close
+                  </Button>
+                  <Button onClick={downloadRecording}>
+                    <Download className="mr-2 h-4 w-4" />
+                    Download Recording
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-8">
+                <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary mx-auto mb-4"></div>
+                <p className="text-muted-foreground">Loading video...</p>
+              </div>
+            )}
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 };

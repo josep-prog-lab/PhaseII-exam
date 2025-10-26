@@ -8,6 +8,12 @@ import { Play, Square, Camera, Mic, Monitor, AlertTriangle, Upload } from "lucid
 import { supabase } from "@/integrations/supabase/client";
 // Prefer secure server-side upload via Supabase Edge Function
 
+// Configurable via .env (optional)
+const RECORDING_FPS = Number(import.meta.env.VITE_RECORDING_FPS) || 30;
+const VIDEO_BITRATE = Number(import.meta.env.VITE_VIDEO_BITRATE) || 500_000; // bps
+const AUDIO_BITRATE = Number(import.meta.env.VITE_AUDIO_BITRATE) || 64_000; // bps
+const PIP_WIDTH_RATIO = Number(import.meta.env.VITE_PIP_WIDTH_RATIO) || 0.2; // 20% of width
+
 interface VideoRecorderProps {
   sessionId: string;
   candidateName?: string;
@@ -32,6 +38,10 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   const webcamStreamRef = useRef<MediaStream | null>(null);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const startTimeRef = useRef<number>(0);
+  const webcamPreviewRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const compositeStreamRef = useRef<MediaStream | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
 
   useEffect(() => {
     checkPermissions();
@@ -88,41 +98,135 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
       });
 
       // Request webcam and microphone
+      console.log('Requesting webcam and microphone...');
       const webcamStream = await navigator.mediaDevices.getUserMedia({
-        video: true,
+        video: {
+          width: { ideal: 1280 },
+          height: { ideal: 720 },
+          facingMode: 'user'
+        },
         audio: true
+      });
+
+      console.log('Webcam stream obtained:', {
+        videoTracks: webcamStream.getVideoTracks().length,
+        audioTracks: webcamStream.getAudioTracks().length,
+        videoSettings: webcamStream.getVideoTracks()[0]?.getSettings()
       });
 
       screenStreamRef.current = screenStream;
       webcamStreamRef.current = webcamStream;
 
-      // Combine streams
-      const combinedStream = new MediaStream();
+      // Show webcam preview
+      if (webcamPreviewRef.current) {
+        console.log('Setting up webcam preview...');
+        const videoElement = webcamPreviewRef.current;
+        videoElement.srcObject = webcamStream;
+        
+        // Ensure video loads and plays
+        videoElement.onloadedmetadata = () => {
+          console.log('Webcam preview metadata loaded, starting playback');
+          videoElement.play()
+            .then(() => console.log('Webcam preview playing successfully'))
+            .catch(err => {
+              console.error('Error playing webcam preview:', err);
+              toast.error('Failed to display camera preview');
+            });
+        };
+        
+        // Handle errors
+        videoElement.onerror = (err) => {
+          console.error('Video element error:', err);
+          toast.error('Camera display error');
+        };
+      }
+
+      // Create composite stream with canvas (screen + webcam overlay)
+      const canvas = canvasRef.current || document.createElement('canvas');
+      if (!canvasRef.current) canvasRef.current = canvas;
       
-      // Add screen video track
-      screenStream.getVideoTracks().forEach(track => {
-        combinedStream.addTrack(track);
-      });
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new Error('Could not get canvas context');
+
+      // Set canvas size to match screen stream
+      const screenTrack = screenStream.getVideoTracks()[0];
+      const screenSettings = screenTrack.getSettings();
+      canvas.width = screenSettings.width || 1920;
+      canvas.height = screenSettings.height || 1080;
+
+      // Create video elements for compositing
+      const screenVideo = document.createElement('video');
+      screenVideo.muted = true;
+      screenVideo.playsInline = true as any;
+      screenVideo.srcObject = screenStream;
+
+      const webcamVideo = document.createElement('video');
+      webcamVideo.muted = true; // avoid feedback
+      webcamVideo.playsInline = true as any;
+      webcamVideo.srcObject = webcamStream;
+
+      // Ensure both videos are ready before starting the draw loop
+      await Promise.all([
+        new Promise<void>((resolve) => {
+          screenVideo.onloadeddata = () => resolve();
+          // Fallback in case event doesn't fire
+          screenVideo.play().catch(() => resolve());
+        }),
+        new Promise<void>((resolve) => {
+          webcamVideo.onloadeddata = () => resolve();
+          webcamVideo.play().catch(() => resolve());
+        })
+      ]);
+
+      // Composite function - draw screen + webcam overlay continuously
+      const drawComposite = () => {
+        if (!ctx) return;
+        
+        // Only draw when a current frame is available
+        if (screenVideo.readyState >= 2) {
+          ctx.drawImage(screenVideo, 0, 0, canvas.width, canvas.height);
+        }
+        
+        // Draw webcam in bottom-right corner (picture-in-picture)
+        const pipWidth = canvas.width * PIP_WIDTH_RATIO;
+        const pipHeight = pipWidth * 0.75; // 4:3 aspect ratio
+        const pipX = canvas.width - pipWidth - 20; // 20px from right
+        const pipY = canvas.height - pipHeight - 20; // 20px from bottom
+        
+        // Draw border around webcam
+        ctx.strokeStyle = '#3b82f6';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(pipX - 2, pipY - 2, pipWidth + 4, pipHeight + 4);
+        
+        // Draw webcam feed when ready
+        if (webcamVideo.readyState >= 2) {
+          ctx.drawImage(webcamVideo, pipX, pipY, pipWidth, pipHeight);
+        }
+        
+        animationFrameRef.current = requestAnimationFrame(drawComposite);
+      };
+
+      // Start compositing loop immediately (independent of isRecording state)
+      animationFrameRef.current = requestAnimationFrame(drawComposite);
+
+      // Capture canvas stream
+      const compositeStream = canvas.captureStream(RECORDING_FPS);
+      compositeStreamRef.current = compositeStream;
       
-      // Add webcam video track
-      webcamStream.getVideoTracks().forEach(track => {
-        combinedStream.addTrack(track);
-      });
-      
-      // Add audio track (prefer screen audio, fallback to webcam)
+      // Add audio tracks to composite stream
       const audioTracks = screenStream.getAudioTracks().length > 0 
         ? screenStream.getAudioTracks() 
         : webcamStream.getAudioTracks();
       
       audioTracks.forEach(track => {
-        combinedStream.addTrack(track);
+        compositeStream.addTrack(track);
       });
 
       // Create recorder with optimized settings for smaller file sizes
-      const recorder = new MediaRecorder(combinedStream, {
-        mimeType: 'video/webm;codecs=vp8', // Use vp8 for better compression
-        videoBitsPerSecond: 500000, // Reduced from 1Mbps to 500Kbps
-        audioBitsPerSecond: 64000 // Reduced from 128Kbps to 64Kbps
+      const recorder = new MediaRecorder(compositeStream, {
+        mimeType: 'video/webm;codecs=vp8',
+        videoBitsPerSecond: VIDEO_BITRATE,
+        audioBitsPerSecond: AUDIO_BITRATE
       });
 
       const chunks: BlobPart[] = [];
@@ -231,6 +335,11 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
   };
 
   const stopAllStreams = () => {
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+
     if (screenStreamRef.current) {
       screenStreamRef.current.getTracks().forEach(track => track.stop());
       screenStreamRef.current = null;
@@ -239,6 +348,16 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
     if (webcamStreamRef.current) {
       webcamStreamRef.current.getTracks().forEach(track => track.stop());
       webcamStreamRef.current = null;
+    }
+    
+    if (compositeStreamRef.current) {
+      compositeStreamRef.current.getTracks().forEach(track => track.stop());
+      compositeStreamRef.current = null;
+    }
+    
+    // Clear webcam preview
+    if (webcamPreviewRef.current) {
+      webcamPreviewRef.current.srcObject = null;
     }
   };
 
@@ -262,117 +381,42 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
 
       console.log(`Uploading recording: ${sessionId}-${new Date().toISOString()}.webm, Size: ${(blob.size / (1024 * 1024)).toFixed(2)}MB`);
 
-      // Build desired name using candidate full name; fall back to session-based
-      const safeName = (candidateName || `session-${sessionId}`).trim().replace(/\s+/g, ' ');
-      const desiredName = `${safeName}`;
-
-      // Try Google Drive upload first (preferred method)
-      try {
-        console.log('Attempting Google Drive upload...');
+      // Build file name using candidate name or session ID
+      const safeName = (candidateName || `session-${sessionId}`).trim().replace(/\s+/g, '-').replace(/[^a-zA-Z0-9-_]/g, '');
+      const fileName = `${safeName}-${new Date().toISOString()}.webm`;
         
-        // Upload to Google Drive via Edge Function (FormData)
-        const form = new FormData();
-        form.append('file', blob, `${safeName}.webm`);
-        form.append('candidateName', desiredName);
-
-        // Try to get the correct Supabase functions URL
-        const supabaseUrl = (import.meta as any).env?.VITE_SUPABASE_URL;
-        const functionsBase = supabaseUrl ? `${supabaseUrl}/functions/v1` : '/functions/v1';
-        console.log(`Using functions base URL: ${functionsBase}`);
-        
-        const res = await fetch(`${functionsBase}/upload-to-drive`, { 
-          method: 'POST', 
-          body: form 
+      // Upload to Supabase storage
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('exam-recordings')
+        .upload(fileName, blob, {
+          cacheControl: '3600',
+          upsert: false
         });
-        
-        if (!res.ok) {
-          const text = await res.text();
-          console.error(`Drive upload failed: ${res.status} ${text}`);
-          throw new Error(`Drive upload failed: ${res.status} ${text}`);
-        }
-        
-        const driveFile = await res.json();
-        console.log('Google Drive upload successful:', driveFile);
 
-        // Update session with Drive link (prefer webViewLink); store file id as well
-        const updateData: any = { 
-          recording_url: driveFile.webViewLink || driveFile.webContentLink || driveFile.id
-        };
-        
-        // Only include recording_drive_file_id if the column exists
-        // This prevents errors if the column hasn't been added yet
-        try {
-          updateData.recording_drive_file_id = driveFile.id;
-        } catch (error) {
-          console.warn('recording_drive_file_id column not available, skipping');
-        }
-
-        const { error: updateError } = await supabase
-          .from('candidate_sessions')
-          .update(updateData)
-          .eq('id', sessionId);
-
-        if (updateError) {
-          console.error('Database update error:', updateError);
-          throw new Error(`Failed to update session: ${updateError.message}`);
-        }
-
-        toast.success(`Recording uploaded to Drive (${(blob.size / (1024 * 1024)).toFixed(2)}MB)`);
-        return driveFile.id;
-
-      } catch (driveError) {
-        console.warn('Google Drive upload failed, trying Supabase storage fallback:', driveError);
-        
-        // If it's a 404 error, the Edge Function isn't deployed
-        if (driveError instanceof Error && driveError.message.includes('404')) {
-          console.warn('Google Drive Edge Function not deployed, using Supabase storage only');
-        }
-        
-        // Fallback to Supabase storage if Google Drive fails
-        const fileName = `session-${sessionId}-${new Date().toISOString()}.webm`;
-        
-        const { data: uploadData, error: uploadError } = await supabase.storage
-          .from('exam-recordings')
-          .upload(fileName, blob, {
-            cacheControl: '3600',
-            upsert: false
-          });
-
-        if (uploadError) {
-          console.error('Storage upload error:', uploadError);
-          throw new Error(`Upload failed: ${uploadError.message}`);
-        }
-
-        // Get public URL
-        const { data: urlData } = supabase.storage
-          .from('exam-recordings')
-          .getPublicUrl(fileName);
-
-        // Update session with storage URL
-        const updateData: any = { 
-          recording_url: urlData.publicUrl
-        };
-        
-        // Only include recording_drive_file_id if the column exists
-        try {
-          updateData.recording_drive_file_id = uploadData.path;
-        } catch (error) {
-          console.warn('recording_drive_file_id column not available, skipping');
-        }
-
-        const { error: updateError } = await supabase
-          .from('candidate_sessions')
-          .update(updateData)
-          .eq('id', sessionId);
-
-        if (updateError) {
-          console.error('Database update error:', updateError);
-          throw new Error(`Failed to update session: ${updateError.message}`);
-        }
-
-        toast.success(`Recording uploaded to storage (${(blob.size / (1024 * 1024)).toFixed(2)}MB)`);
-        return uploadData.path;
+      if (uploadError) {
+        console.error('Storage upload error:', uploadError);
+        throw new Error(`Upload failed: ${uploadError.message}`);
       }
+
+      console.log('Upload successful, storage path:', uploadData.path);
+
+      // Update session with JUST the storage path (not the full URL)
+      // This allows us to use .download() and .createSignedUrl() later
+      const { error: updateError } = await supabase
+        .from('candidate_sessions')
+        .update({ 
+          recording_url: uploadData.path,  // Store only the path
+          recording_checksum: checksum
+        })
+        .eq('id', sessionId);
+
+      if (updateError) {
+        console.error('Database update error:', updateError);
+        throw new Error(`Failed to update session: ${updateError.message}`);
+      }
+
+      toast.success(`Recording uploaded successfully (${(blob.size / (1024 * 1024)).toFixed(2)}MB)`);
+      return uploadData.path;
 
     } catch (error) {
       console.error('Upload error:', error);
@@ -510,6 +554,36 @@ const VideoRecorder = ({ sessionId, candidateName, onRecordingStart, onRecording
             </p>
           </div>
         )}
+
+        {/* Webcam Preview - Shows candidate's face during exam */}
+        {isRecording && (
+          <div className="mt-4">
+            <h4 className="text-sm font-medium mb-2 flex items-center gap-2">
+              <Camera className="h-4 w-4" />
+              Your Camera View
+            </h4>
+            <div className="relative rounded-lg overflow-hidden border-2 border-primary bg-gray-900">
+              <video
+                ref={webcamPreviewRef}
+                autoPlay
+                muted
+                playsInline
+                className="w-full h-auto"
+                style={{ maxHeight: '200px', minHeight: '150px', objectFit: 'cover' }}
+              />
+              <div className="absolute top-2 left-2 bg-red-500 text-white text-xs px-2 py-1 rounded flex items-center gap-1">
+                <div className="w-2 h-2 rounded-full bg-white animate-pulse" />
+                LIVE
+              </div>
+            </div>
+            <p className="text-xs text-muted-foreground mt-2">
+              Your face is being recorded and will appear in the bottom-right corner of the exam recording.
+            </p>
+          </div>
+        )}
+
+        {/* Hidden canvas for compositing */}
+        <canvas ref={canvasRef} style={{ display: 'none' }} />
       </CardContent>
     </Card>
   );
